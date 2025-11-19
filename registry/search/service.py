@@ -14,12 +14,15 @@ from typing import (
 
 import faiss
 import numpy as np
-from sentence_transformers import SentenceTransformer
 from pydantic import HttpUrl
 
 from ..core.config import settings
 from ..core.schemas import ServerInfo
 from ..schemas.agent_models import AgentCard
+from ..embeddings import (
+    EmbeddingsClient,
+    create_embeddings_client,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -41,9 +44,9 @@ class _PydanticAwareJSONEncoder(json.JSONEncoder):
 
 class FaissService:
     """Service for managing FAISS vector database operations."""
-    
+
     def __init__(self):
-        self.embedding_model: Optional[SentenceTransformer] = None
+        self.embedding_model: Optional[EmbeddingsClient] = None
         self.faiss_index: Optional[faiss.IndexIDMap] = None
         self.metadata_store: Dict[str, Dict[str, Any]] = {}
         self.next_id_counter: int = 0
@@ -54,41 +57,58 @@ class FaissService:
         await self._load_faiss_data()
         
     async def _load_embedding_model(self):
-        """Load the sentence transformer model."""
-        logger.info("Loading FAISS data and embedding model...")
-        
+        """Load the embeddings model using the configured provider."""
+        logger.info(
+            f"Loading embedding model with provider: {settings.embeddings_provider}"
+        )
+
         # Ensure servers directory exists
         settings.servers_dir.mkdir(parents=True, exist_ok=True)
-        
+
         try:
+            # Prepare cache directory for sentence-transformers
             model_cache_path = settings.container_registry_dir / ".cache"
             model_cache_path.mkdir(parents=True, exist_ok=True)
-            
-            # Set cache path for sentence transformers
-            import os
-            original_st_home = os.environ.get('SENTENCE_TRANSFORMERS_HOME')
-            os.environ['SENTENCE_TRANSFORMERS_HOME'] = str(model_cache_path)
-            
-            # Check if local model exists
-            model_path = settings.embeddings_model_dir
-            model_exists = model_path.exists() and any(model_path.iterdir()) if model_path.exists() else False
-            
-            if model_exists:
-                logger.info(f"Loading SentenceTransformer model from local path: {settings.embeddings_model_dir}")
-                self.embedding_model = SentenceTransformer(str(settings.embeddings_model_dir))
-            else:
-                logger.info(f"Local model not found at {settings.embeddings_model_dir}, downloading from Hugging Face")
-                self.embedding_model = SentenceTransformer(str(settings.embeddings_model_name))
-            
-            # Restore original environment variable
-            if original_st_home:
-                os.environ['SENTENCE_TRANSFORMERS_HOME'] = original_st_home
-            else:
-                del os.environ['SENTENCE_TRANSFORMERS_HOME']
-                
-            logger.info("SentenceTransformer model loaded successfully.")
+
+            # Create embeddings client using factory
+            self.embedding_model = create_embeddings_client(
+                provider=settings.embeddings_provider,
+                model_name=settings.embeddings_model_name,
+                model_dir=settings.embeddings_model_dir
+                if settings.embeddings_provider == "sentence-transformers"
+                else None,
+                cache_dir=model_cache_path
+                if settings.embeddings_provider == "sentence-transformers"
+                else None,
+                api_key=settings.embeddings_api_key
+                if settings.embeddings_provider == "litellm"
+                else None,
+                api_base=settings.embeddings_api_base
+                if settings.embeddings_provider == "litellm"
+                else None,
+                aws_region=settings.embeddings_aws_region
+                if settings.embeddings_provider == "litellm"
+                else None,
+                embedding_dimension=settings.embeddings_model_dimensions,
+            )
+
+            # Get and log the embedding dimension
+            embedding_dim = self.embedding_model.get_embedding_dimension()
+            logger.info(
+                f"Embedding model loaded successfully. Provider: {settings.embeddings_provider}, "
+                f"Model: {settings.embeddings_model_name}, Dimension: {embedding_dim}"
+            )
+
+            # Warn if dimension doesn't match configuration
+            if embedding_dim != settings.embeddings_model_dimensions:
+                logger.warning(
+                    f"Embedding dimension mismatch: configured={settings.embeddings_model_dimensions}, "
+                    f"actual={embedding_dim}. Using actual dimension."
+                )
+                settings.embeddings_model_dimensions = embedding_dim
+
         except Exception as e:
-            logger.error(f"Failed to load SentenceTransformer model: {e}", exc_info=True)
+            logger.error(f"Failed to load embedding model: {e}", exc_info=True)
             self.embedding_model = None
             
     async def _load_faiss_data(self):
