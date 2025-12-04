@@ -38,6 +38,8 @@ services:
       - KEYCLOAK_M2M_CLIENT_SECRET=${KEYCLOAK_M2M_CLIENT_SECRET}
       # External Registry Configuration
       - EXTERNAL_REGISTRY_TAGS=${EXTERNAL_REGISTRY_TAGS:-anthropic-registry,workday-asor}
+      - ASOR_ACCESS_TOKEN=${ASOR_ACCESS_TOKEN}
+      - ASOR_CLIENT_CREDENTIALS=${ASOR_CLIENT_CREDENTIALS}
       # Embeddings Configuration
       - EMBEDDINGS_PROVIDER=${EMBEDDINGS_PROVIDER:-sentence-transformers}
       - EMBEDDINGS_MODEL_NAME=${EMBEDDINGS_MODEL_NAME:-all-MiniLM-L6-v2}
@@ -55,6 +57,7 @@ services:
       - ${HOME}/mcp-gateway/models:/app/registry/models
       - ${HOME}/mcp-gateway/logs:/app/logs
       - ${HOME}/mcp-gateway/auth_server/scopes.yml:/app/auth_server/scopes.yml
+      - ${HOME}/mcp-gateway/federation.json:/app/config/federation.json
       - ${HOME}/mcp-gateway/ssl:/etc/ssl:ro
     depends_on:
       - auth-server
@@ -64,8 +67,8 @@ services:
   # Metrics Collection Service
   metrics-service:
     build:
-      context: .
-      dockerfile: metrics-service/Dockerfile
+      context: metrics-service
+      dockerfile: Dockerfile
     environment:
       - METRICS_SERVICE_PORT=8890
       - METRICS_SERVICE_HOST=0.0.0.0
@@ -140,10 +143,8 @@ services:
   # Current Time MCP Server
   currenttime-server:
     build:
-      context: .
-      dockerfile: docker/Dockerfile.mcp-server
-      args:
-        SERVER_PATH: servers/currenttime
+      context: servers/currenttime
+      dockerfile: ../../docker/Dockerfile.mcp-server
     environment:
       - PORT=8000
       - MCP_TRANSPORT=streamable-http
@@ -154,10 +155,8 @@ services:
   # Financial Info MCP Server
   fininfo-server:
     build:
-      context: .
-      dockerfile: docker/Dockerfile.mcp-server
-      args:
-        SERVER_PATH: servers/fininfo
+      context: servers/fininfo
+      dockerfile: ../../docker/Dockerfile.mcp-server
     environment:
       - PORT=8001
       - SECRET_KEY=${SECRET_KEY}
@@ -170,10 +169,8 @@ services:
   # MCP Gateway Server
   mcpgw-server:
     build:
-      context: .
-      dockerfile: docker/Dockerfile.mcp-server
-      args:
-        SERVER_PATH: servers/mcpgw
+      context: servers/mcpgw
+      dockerfile: ../../docker/Dockerfile.mcp-server
     environment:
       - PORT=8003
       - REGISTRY_BASE_URL=http://registry:7860
@@ -192,10 +189,8 @@ services:
   # Real Server Fake Tools MCP Server
   realserverfaketools-server:
     build:
-      context: .
-      dockerfile: docker/Dockerfile.mcp-server
-      args:
-        SERVER_PATH: servers/realserverfaketools
+      context: servers/realserverfaketools
+      dockerfile: ../../docker/Dockerfile.mcp-server
     environment:
       - PORT=8002
     ports:
