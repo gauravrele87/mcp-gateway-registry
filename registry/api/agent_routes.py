@@ -45,6 +45,93 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+async def _perform_agent_security_scan_on_registration(
+    path: str,
+    agent_card: AgentCard,
+    agent_card_dict: dict,
+) -> bool:
+    """Perform security scan on newly registered agent.
+
+    Handles the complete security scan workflow including:
+    - Running the security scan with configured analyzers
+    - Adding security-pending tag if scan fails
+    - Disabling agent if configured and scan fails
+    - Updating FAISS with disabled state if agent disabled
+
+    All scan failures are non-fatal and will be logged but not raised.
+
+    Args:
+        path: Agent path (e.g., /code-reviewer)
+        agent_card: AgentCard Pydantic model instance
+        agent_card_dict: Agent card as dictionary for scanning
+
+    Returns:
+        bool: True if agent should remain enabled, False if disabled due to scan
+    """
+    from ..services.agent_scanner import agent_scanner_service
+    from ..search.service import faiss_service
+
+    scan_config = agent_scanner_service.get_scan_config()
+    if not (scan_config.enabled and scan_config.scan_on_registration):
+        return True  # Agent remains enabled
+
+    logger.info(f"Running A2A security scan for newly registered agent: {path}")
+
+    try:
+        # Run the security scan
+        scan_result = await agent_scanner_service.scan_agent(
+            agent_card=agent_card_dict,
+            agent_path=path,
+            analyzers=scan_config.analyzers,
+            api_key=scan_config.llm_api_key,
+            timeout=scan_config.scan_timeout_seconds,
+        )
+
+        # Handle unsafe agents
+        if not scan_result.is_safe:
+            logger.warning(
+                f"Agent {path} failed security scan. "
+                f"Critical: {scan_result.critical_issues}, High: {scan_result.high_severity}"
+            )
+
+            # Add security-pending tag if configured
+            if scan_config.add_security_pending_tag:
+                current_tags = agent_card.tags or []
+                if "security-pending" not in current_tags:
+                    current_tags.append("security-pending")
+                    agent_card.tags = current_tags
+                    # Update agent with new tags
+                    agent_info = agent_service.get_agent_info(path)
+                    if agent_info:
+                        updated_card = agent_info.model_dump()
+                        updated_card["tags"] = current_tags
+                        from ..schemas.agent_models import AgentCard as AgentCardModel
+
+                        agent_service.register_agent(AgentCardModel(**updated_card))
+                    logger.info(f"Added 'security-pending' tag to agent {path}")
+
+            # Disable agent if configured
+            if scan_config.block_unsafe_agents:
+                agent_service.toggle_agent(path, False)
+                logger.warning(f"Disabled agent {path} due to failed security scan")
+
+                # Update FAISS with disabled state
+                await faiss_service.add_or_update_entity(
+                    path, agent_card_dict, "a2a_agent", False
+                )
+                return False  # Agent disabled
+
+        else:
+            logger.info(f"Agent {path} passed security scan")
+
+        return True  # Agent remains enabled
+
+    except Exception as e:
+        logger.error(f"Failed to run security scan for agent {path}: {e}")
+        # Non-fatal error - agent is registered but not scanned
+        return True  # Agent remains enabled on scan error
+
+
 class RatingRequest(BaseModel):
     rating: int
 
@@ -296,61 +383,10 @@ async def register_agent(
     )
 
     # Agent security scanning if enabled
-    from ..services.agent_scanner import agent_scanner_service
-
-    scan_config = agent_scanner_service.get_scan_config()
-    if scan_config.enabled and scan_config.scan_on_registration:
-        logger.info(f"Running A2A security scan for newly registered agent: {path}")
-        try:
-            # Convert agent card to dict for scanning
-            agent_card_dict = agent_card.model_dump()
-
-            # Run the security scan
-            scan_result = await agent_scanner_service.scan_agent(
-                agent_card=agent_card_dict,
-                agent_path=path,
-                analyzers=scan_config.analyzers,
-                api_key=scan_config.llm_api_key,
-                timeout=scan_config.scan_timeout_seconds,
-            )
-
-            # Handle unsafe agents
-            if not scan_result.is_safe:
-                logger.warning(
-                    f"Agent {path} failed security scan. "
-                    f"Critical: {scan_result.critical_issues}, High: {scan_result.high_severity}"
-                )
-
-                # Add security-pending tag if configured
-                if scan_config.add_security_pending_tag:
-                    current_tags = agent_card.tags or []
-                    if "security-pending" not in current_tags:
-                        current_tags.append("security-pending")
-                        agent_card.tags = current_tags
-                        # Update agent with new tags
-                        agent_info = agent_service.get_agent_info(path)
-                        if agent_info:
-                            updated_card = agent_info.model_dump()
-                            updated_card["tags"] = current_tags
-                            from ..schemas.agent_models import AgentCard as AgentCardModel
-                            agent_service.register_agent(AgentCardModel(**updated_card))
-                        logger.info(f"Added 'security-pending' tag to agent {path}")
-
-                # Disable agent if configured
-                if scan_config.block_unsafe_agents:
-                    agent_service.toggle_agent(path, False)
-                    logger.warning(f"Disabled agent {path} due to failed security scan")
-
-                    # Update FAISS with disabled state
-                    await faiss_service.add_or_update_entity(path, agent_card_dict, "a2a_agent", False)
-                    is_enabled = False
-
-            else:
-                logger.info(f"Agent {path} passed security scan")
-
-        except Exception as e:
-            logger.error(f"Failed to run security scan for agent {path}: {e}")
-            # Non-fatal error - agent is registered but not scanned
+    agent_card_dict = agent_card.model_dump()
+    is_enabled = await _perform_agent_security_scan_on_registration(
+        path, agent_card, agent_card_dict
+    )
 
     return JSONResponse(
         status_code=status.HTTP_201_CREATED,
