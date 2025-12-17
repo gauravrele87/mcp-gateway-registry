@@ -46,7 +46,7 @@ RUN pip install uv && \
     "torch>=1.6.0" \
     "huggingface-hub[cli,hf_xet]>=0.31.1" \
     "hf_xet>=0.1.0" \
-    "cisco-ai-mcp-scanner==3.2.2"
+    "cisco-ai-mcp-scanner==3.2.3"
 
 # Copy the application code
 COPY . /app/
