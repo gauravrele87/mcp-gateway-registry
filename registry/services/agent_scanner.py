@@ -362,6 +362,39 @@ class AgentScannerService:
 
         return str(latest_file)
 
+    def get_scan_result(self, agent_path: str) -> Optional[dict]:
+        """
+        Get the latest scan result for an agent.
+
+        Looks for scan files in the agent_security_scans directory using
+        the agent path to locate the latest scan file.
+
+        Args:
+            agent_path: Agent path (e.g., /code-reviewer)
+
+        Returns:
+            Dictionary containing scan results, or None if no scan found
+        """
+        output_dir = self._ensure_output_directory()
+
+        # Generate safe filename from agent path
+        safe_path = agent_path.replace("/", "_").strip("_")
+        latest_filename = f"{safe_path}.json"
+        latest_file = output_dir / latest_filename
+
+        # Check if file exists
+        if not latest_file.exists():
+            logger.warning(f"No scan results found for agent: {agent_path}")
+            return None
+
+        try:
+            with open(latest_file, "r") as f:
+                scan_data = json.load(f)
+            return scan_data
+        except Exception as e:
+            logger.error(f"Failed to read scan results for agent {agent_path}: {e}")
+            return None
+
 
 # Global singleton instance
 agent_scanner_service = AgentScannerService()
