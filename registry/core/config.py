@@ -155,6 +155,134 @@ class Settings(BaseSettings):
         description="Documentation or support URL",
     )
 
+    # Keycloak Configuration
+    keycloak_enabled: bool = Field(
+        default=False,
+        description="Enable Keycloak as the identity provider",
+    )
+    keycloak_url: str = Field(
+        default="http://keycloak:8080",
+        description="Internal Keycloak URL",
+    )
+    keycloak_external_url: str = Field(
+        default="http://localhost:8080",
+        description="External Keycloak URL for browser redirects",
+    )
+    keycloak_realm: str = Field(
+        default="mcp-gateway",
+        description="Keycloak realm name",
+    )
+    keycloak_client_id: str = Field(
+        default="mcp-gateway-web",
+        description="Keycloak OAuth2 client ID",
+    )
+    keycloak_client_secret: str = Field(
+        default="",
+        description="Keycloak OAuth2 client secret",
+    )
+    keycloak_admin: str = Field(
+        default="admin",
+        description="Keycloak admin username",
+    )
+    keycloak_admin_password: str = Field(
+        default="",
+        description="Keycloak admin password",
+    )
+    keycloak_m2m_client_id: str = Field(
+        default="",
+        description="Keycloak M2M (machine-to-machine) client ID",
+    )
+    keycloak_m2m_client_secret: str = Field(
+        default="",
+        description="Keycloak M2M (machine-to-machine) client secret",
+    )
+
+    # Okta Configuration
+    okta_enabled: bool = Field(
+        default=False,
+        description="Enable Okta as the identity provider",
+    )
+    okta_domain: str = Field(
+        default="",
+        description="Okta organization domain (e.g., dev-123456.okta.com)",
+    )
+    okta_client_id: str = Field(
+        default="",
+        description="Okta OAuth2 client ID",
+    )
+    okta_client_secret: str = Field(
+        default="",
+        description="Okta OAuth2 client secret",
+    )
+    okta_m2m_client_id: str = Field(
+        default="",
+        description="Okta M2M (machine-to-machine) client ID",
+    )
+    okta_m2m_client_secret: str = Field(
+        default="",
+        description="Okta M2M (machine-to-machine) client secret",
+    )
+    okta_api_token: str = Field(
+        default="",
+        description="Okta API token for admin operations",
+    )
+    okta_auth_server_id: str = Field(
+        default="",
+        description="Okta authorization server ID",
+    )
+
+    # Entra ID Configuration
+    entra_enabled: bool = Field(
+        default=False,
+        description="Enable Microsoft Entra ID as the identity provider",
+    )
+    entra_tenant_id: str = Field(
+        default="",
+        description="Microsoft Entra ID tenant ID",
+    )
+    entra_client_id: str = Field(
+        default="",
+        description="Microsoft Entra ID client ID",
+    )
+    entra_client_secret: str = Field(
+        default="",
+        description="Microsoft Entra ID client secret",
+    )
+    entra_group_admin_id: str = Field(
+        default="",
+        description="Microsoft Entra ID admin group ID",
+    )
+
+    # ANS Integration
+    ans_integration_enabled: bool = Field(
+        default=False,
+        description="Enable ANS (Agent Name Service) integration",
+    )
+    ans_api_endpoint: str = Field(
+        default="https://api.godaddy.com",
+        description="ANS API base URL",
+    )
+    ans_api_key: str = Field(
+        default="",
+        description="GoDaddy API key for ANS",
+    )
+    ans_api_secret: str = Field(
+        default="",
+        description="GoDaddy API secret for ANS",
+    )
+    ans_api_timeout_seconds: int = Field(
+        default=30,
+        description="ANS API request timeout in seconds",
+    )
+    ans_sync_interval_hours: int = Field(
+        default=6,
+        description="ANS background sync interval in hours",
+    )
+    ans_verification_cache_ttl_seconds: int = Field(
+        default=3600,
+        description="ANS verification cache TTL in seconds",
+    )
+
     # Audit Logging Configuration
     audit_log_enabled: bool = True  # Enable/disable audit logging globally
     audit_log_dir: str = "logs/audit"  # Directory for local audit log files

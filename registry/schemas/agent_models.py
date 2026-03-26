@@ -523,6 +523,25 @@ class AgentCard(BaseModel):
         description="unverified, community, verified, trusted",
     )
 
+    # ANS Integration
+    ans_metadata: dict[str, Any] | None = Field(
+        default=None,
+        alias="ansMetadata",
+        description="ANS (Agent Name Service) verification metadata",
+    )
+
+    # Health check status (persisted to MongoDB)
+    health_status: str = Field(
+        default="unknown",
+        alias="healthStatus",
+        description="Last known health status: healthy, unhealthy, unknown",
+    )
+    last_health_check: datetime | None = Field(
+        default=None,
+        alias="lastHealthCheck",
+        description="Timestamp of last health check",
+    )
+
     # Lifecycle and federation metadata
     status: LifecycleStatus = Field(
         default=LifecycleStatus.ACTIVE,
@@ -717,6 +736,11 @@ class AgentInfo(BaseModel):
         alias="syncMetadata",
         description="Federation sync metadata for items from peer registries",
     )
+    ans_metadata: dict[str, Any] | None = Field(
+        default=None,
+        alias="ansMetadata",
+        description="ANS verification metadata",
+    )
     registered_by: str | None = Field(
         None,
         alias="registeredBy",
@@ -755,6 +779,16 @@ class AgentInfo(BaseModel):
         None,
         alias="updatedAt",
         description="Last update timestamp in this registry (ISO format)",
+    )
+    health_status: str = Field(
+        default="unknown",
+        alias="healthStatus",
+        description="Last known health status: healthy, unhealthy, unknown",
+    )
+    last_health_check: str | None = Field(
+        default=None,
+        alias="lastHealthCheck",
+        description="Timestamp of last health check (ISO format)",
     )
 
     model_config = ConfigDict(
@@ -843,6 +877,10 @@ class AgentRegistrationRequest(BaseModel):
     external_tags: str | list[str] | None = Field(
         None,
         description="Comma-separated tags or list of tags from external/source system",
+    )
+    ans_agent_id: str | None = Field(
+        default=None,
+        description="Optional ANS Agent ID to link during registration",
     )
     model_config = ConfigDict(populate_by_name=True)
 

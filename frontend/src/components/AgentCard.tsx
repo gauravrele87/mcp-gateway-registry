@@ -21,6 +21,7 @@ import SecurityScanModal from './SecurityScanModal';
 import StarRatingWidget from './StarRatingWidget';
 import DeleteConfirmation from './DeleteConfirmation';
 import StatusBadge from './StatusBadge';
+import { ANSBadge } from './ANSBadge';
 import { formatRelativeTime } from '../utils/dateUtils';
 
 interface SyncMetadata {
@@ -53,6 +54,19 @@ export interface Agent {
   status?: 'healthy' | 'healthy-auth-expired' | 'unhealthy' | 'unknown';
   // Federation sync metadata
   sync_metadata?: SyncMetadata;
+  // ANS verification metadata
+  ans_metadata?: {
+    ans_agent_id: string;
+    status: 'verified' | 'expired' | 'revoked' | 'not_found' | 'pending';
+    domain?: string;
+    organization?: string;
+    certificate?: {
+      not_after?: string;
+      subject_dn?: string;
+      issuer_dn?: string;
+    };
+    last_verified?: string;
+  };
   // Lifecycle status
   lifecycle_status?: 'active' | 'deprecated' | 'draft' | 'beta';
   source_created_at?: string;
@@ -102,7 +116,9 @@ const formatTimeSince = (timestamp: string | null | undefined): string | null =>
     const diffDays = Math.floor(diffHours / 24);
 
     let result;
-    if (diffDays > 0) {
+    if (diffSeconds < 0) {
+      result = 'just now';
+    } else if (diffDays > 0) {
       result = `${diffDays}d ago`;
     } else if (diffHours > 0) {
       result = `${diffHours}h ago`;
@@ -355,16 +371,13 @@ const AgentCard: React.FC<AgentCardProps> = React.memo(({
             <div className="p-5 pb-4">
               <div className="flex items-start justify-between mb-4">
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-3">
+                  <div className="flex items-center flex-wrap gap-2 mb-3">
                     <h3 className="text-lg font-bold text-gray-900 dark:text-white truncate">
                       {agent.name}
                     </h3>
                     {agent.lifecycle_status && (
                       <StatusBadge status={agent.lifecycle_status} />
                     )}
-                    <span className="px-2 py-0.5 text-xs font-semibold bg-gradient-to-r from-cyan-100 to-blue-100 text-cyan-700 dark:from-cyan-900/30 dark:to-blue-900/30 dark:text-cyan-300 rounded-full flex-shrink-0 border border-cyan-200 dark:border-cyan-600">
-                      AGENT
-                    </span>
                     {/* Check if this is an ASOR agent */}
                     {(agent.tags?.includes('asor') || (agent as any).provider === 'ASOR') && (
                       <span className="px-2 py-0.5 text-xs font-semibold bg-gradient-to-r from-orange-100 to-red-100 text-orange-700 dark:from-orange-900/30 dark:to-red-900/30 dark:text-orange-300 rounded-full flex-shrink-0 border border-orange-200 dark:border-orange-600">
@@ -400,6 +413,12 @@ const AgentCard: React.FC<AgentCardProps> = React.memo(({
                       </span>
                     )}
                   </div>
+                  {/* ANS Verified badge on its own row to avoid overlap */}
+                  {agent.ans_metadata && (
+                    <div className="mt-1">
+                      <ANSBadge ansMetadata={agent.ans_metadata} compact />
+                    </div>
+                  )}
 
                   <code className="text-xs text-gray-600 dark:text-gray-300 bg-gray-50 dark:bg-gray-800/50 px-2 py-1 rounded font-mono">
                     {agent.path}

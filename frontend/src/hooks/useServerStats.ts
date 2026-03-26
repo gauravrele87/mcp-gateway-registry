@@ -38,6 +38,18 @@ interface Server {
   mcp_server_version_previous?: string;
   mcp_server_version_updated_at?: string;
   sync_metadata?: SyncMetadata;
+  ans_metadata?: {
+    ans_agent_id: string;
+    status: 'verified' | 'expired' | 'revoked' | 'not_found' | 'pending';
+    domain?: string;
+    organization?: string;
+    certificate?: {
+      not_after?: string;
+      subject_dn?: string;
+      issuer_dn?: string;
+    };
+    last_verified?: string;
+  };
   registered_by?: string | null;
 }
 
@@ -174,6 +186,7 @@ export const useServerStats = (): UseServerStatsReturn => {
           mcp_server_version_previous: serverInfo.mcp_server_version_previous,
           mcp_server_version_updated_at: serverInfo.mcp_server_version_updated_at,
           sync_metadata: serverInfo.sync_metadata,
+          ans_metadata: serverInfo.ans_metadata || serverInfo.ansMetadata,
           auth_scheme: serverInfo.auth_scheme,
           auth_header_name: serverInfo.auth_header_name,
         };
@@ -197,13 +210,14 @@ export const useServerStats = (): UseServerStatsReturn => {
           official: false, // Agents don't have official flag
           enabled: agentInfo.is_enabled !== undefined ? agentInfo.is_enabled : false,
           tags: agentInfo.tags || [],
-          last_checked_time: undefined, // Agents don't have health check timestamp
+          last_checked_time: agentInfo.last_health_check || agentInfo.lastHealthCheck || undefined,
           usersCount: 0,
           rating: agentInfo.num_stars || 0,
-          status: 'unknown' as const, // Agents don't have health status yet
+          status: mapHealthStatus(agentInfo.health_status || agentInfo.healthStatus || 'unknown'),
           num_tools: agentInfo.num_skills || 0, // Use num_skills for agents
           type: 'agent' as const,
           sync_metadata: agentInfo.sync_metadata,
+          ans_metadata: agentInfo.ans_metadata || agentInfo.ansMetadata,
           registered_by: agentInfo.registered_by || agentInfo.registeredBy || null,
         };
         

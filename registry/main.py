@@ -24,6 +24,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from registry.api.agent_routes import router as agent_router
+from registry.api.ans_routes import router as ans_router
 from registry.api.config_routes import router as config_router
 from registry.api.federation_export_routes import router as federation_export_router
 from registry.api.federation_routes import router as federation_router
@@ -421,6 +422,14 @@ async def lifespan(app: FastAPI):
         await peer_sync_scheduler.start()
         logger.info("Peer sync scheduler started")
 
+        # Start ANS sync scheduler
+        if settings.ans_integration_enabled:
+            from registry.services.ans_sync_scheduler import get_ans_sync_scheduler
+
+            ans_scheduler = get_ans_sync_scheduler()
+            await ans_scheduler.start()
+            logger.info("ANS sync scheduler started")
+
         # Initialize built-in demo servers (airegistry-tools)
         # This ensures the registry management tools are always available
         from registry.services.demo_servers_init import initialize_demo_servers
@@ -455,6 +464,13 @@ async def lifespan(app: FastAPI):
     # Shutdown tasks
     logger.info("🔄 Shutting down MCP Gateway Registry...")
     try:
+        # Stop ANS sync scheduler
+        if settings.ans_integration_enabled:
+            from registry.services.ans_sync_scheduler import get_ans_sync_scheduler
+
+            ans_scheduler = get_ans_sync_scheduler()
+            await ans_scheduler.stop()
+
         # Stop peer sync scheduler
         peer_sync_scheduler = get_peer_sync_scheduler()
         await peer_sync_scheduler.stop()
@@ -589,6 +605,7 @@ if settings.audit_log_enabled:
 app.include_router(system_router, tags=["System"])  # /api/version, /api/stats
 app.include_router(auth_router, prefix="/api/auth", tags=["Authentication"])
 app.include_router(servers_router, prefix="/api", tags=["Server Management"])
+app.include_router(ans_router, prefix="/api", tags=["ANS Integration"])
 app.include_router(agent_router, prefix="/api", tags=["Agent Management"])
 app.include_router(management_router, prefix="/api")
 app.include_router(search_router, prefix="/api/search", tags=["Semantic Search"])

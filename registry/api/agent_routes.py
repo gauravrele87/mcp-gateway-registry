@@ -146,6 +146,28 @@ class RatingRequest(BaseModel):
     rating: int
 
 
+def _build_agent_health_urls(
+    base_url: str,
+) -> list[str]:
+    """Build health check URLs for an A2A agent in priority order.
+
+    Per the A2A spec, there is no /ping endpoint. Agent availability
+    is determined by fetching the agent card at /.well-known/agent-card.json.
+    Falls back to the registered URL for non-A2A agents.
+
+    Args:
+        base_url: The agent's registered URL (e.g., https://agent.example.com/a2a)
+
+    Returns:
+        List of URLs to try in order (agent card first, then registered URL)
+    """
+    from urllib.parse import urlparse
+
+    parsed = urlparse(base_url)
+    agent_card_url = f"{parsed.scheme}://{parsed.netloc}/.well-known/agent-card.json"
+    return [agent_card_url, base_url]
+
+
 def _normalize_path(
     path: str | None,
     agent_name: str | None = None,
@@ -474,6 +496,31 @@ async def register_agent(
         path, agent_card, agent_card_dict
     )
 
+    # Best-effort ANS linking if ans_agent_id is provided
+    if request.ans_agent_id and settings.ans_integration_enabled:
+        try:
+            from ..services.ans_service import link_ans_to_agent
+
+            ans_result = await link_ans_to_agent(
+                agent_path=path,
+                ans_agent_id=request.ans_agent_id,
+                username=user_context["username"],
+            )
+            if ans_result.get("success"):
+                logger.info(
+                    f"ANS ID '{request.ans_agent_id}' linked to agent '{path}'"
+                )
+            else:
+                logger.warning(
+                    f"Failed to link ANS ID '{request.ans_agent_id}' to agent '{path}': "
+                    f"{ans_result.get('message', 'Unknown error')}"
+                )
+        except Exception as e:
+            logger.warning(
+                f"ANS linking failed for agent '{path}' with ANS ID "
+                f"'{request.ans_agent_id}': {e}"
+            )
+
     return JSONResponse(
         status_code=status.HTTP_201_CREATED,
         content={
@@ -572,6 +619,7 @@ async def list_agents(
                 streaming=streaming,
                 trust_level=agent.trust_level,
                 sync_metadata=agent.sync_metadata,
+                ans_metadata=agent.ans_metadata,
                 registered_by=agent.registered_by,
                 status=agent.status.value if hasattr(agent, 'status') and agent.status else "active",
                 provider_organization=agent.provider.organization if agent.provider else None,
@@ -580,6 +628,8 @@ async def list_agents(
                 source_updated_at=agent.source_updated_at.isoformat() if agent.source_updated_at else None,
                 registered_at=agent.registered_at.isoformat() if agent.registered_at else None,
                 updated_at=agent.updated_at.isoformat() if agent.updated_at else None,
+                health_status=agent.health_status or "unknown",
+                last_health_check=agent.last_health_check.isoformat() if agent.last_health_check else None,
             )
             filtered_agents.append(agent_info)
 
@@ -603,7 +653,13 @@ async def check_agent_health(
     path: str,
     user_context: Annotated[dict, Depends(nginx_proxied_auth)],
 ):
-    """Perform a live /ping health check against an agent endpoint."""
+    """Perform a health check against an A2A agent.
+
+    Per the A2A spec, there is no /ping endpoint. Agent availability is
+    determined by fetching the agent card from /.well-known/agent-card.json
+    on the agent's host. Falls back to the registered URL if the agent card
+    endpoint is not available.
+    """
     path = _normalize_path(path)
 
     agent_card = await agent_service.get_agent_info(path)
@@ -630,42 +686,67 @@ async def check_agent_health(
         )
 
     base_url = str(agent_card.url).rstrip("/")
-    ping_url = f"{base_url}/ping"
+    health_urls = _build_agent_health_urls(base_url)
     timeout_seconds = max(1, settings.health_check_timeout_seconds)
 
-    status_label = "unknown"
+    status_label = "unhealthy"
     detail = None
     status_code = None
     response_time_ms = None
-    start_time = datetime.now(UTC)
+    health_check_url = health_urls[0]
 
-    try:
-        async with httpx.AsyncClient(timeout=timeout_seconds) as client:
-            response = await client.get(ping_url)
-        status_code = response.status_code
-        response_time_ms = int((datetime.now(UTC) - start_time).total_seconds() * 1000)
-        if response.status_code == 200:
-            status_label = "healthy"
-        else:
-            status_label = "unhealthy"
+    for url in health_urls:
+        health_check_url = url
+        start_time = datetime.now(UTC)
+
+        try:
+            async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+                response = await client.get(url)
+            status_code = response.status_code
+            response_time_ms = int((datetime.now(UTC) - start_time).total_seconds() * 1000)
+
+            if response.status_code == 200:
+                status_label = "healthy"
+                detail = None
+                logger.info(f"Agent health check for {path} succeeded on {url}")
+                break
+
             detail = f"Agent responded with HTTP {response.status_code}"
-    except httpx.TimeoutException:
-        status_label = "unhealthy"
-        detail = "Health check timed out"
-    except httpx.HTTPError as exc:
-        status_label = "unhealthy"
-        detail = f"Health check failed: {exc}"
-    except Exception as exc:
-        status_label = "unhealthy"
-        detail = f"Unexpected health check error: {exc}"
+            logger.debug(f"Agent health check for {path} got HTTP {response.status_code} on {url}")
 
-    last_checked_iso = datetime.now(UTC).isoformat()
+        except httpx.TimeoutException:
+            detail = f"Health check timed out on {url}"
+            logger.debug(f"Agent health check for {path} timed out on {url}")
+        except httpx.HTTPError as exc:
+            detail = f"Health check failed on {url}: {exc}"
+            logger.debug(f"Agent health check for {path} failed on {url}: {exc}")
+        except Exception as exc:
+            detail = f"Unexpected health check error on {url}: {exc}"
+            logger.debug(f"Agent health check for {path} unexpected error on {url}: {exc}")
 
-    logger.info(f"Agent health check for {path} ({ping_url}) completed with status {status_label}")
+    last_checked = datetime.now(UTC)
+    last_checked_iso = last_checked.isoformat()
+
+    # Persist health status to MongoDB
+    try:
+        await agent_service.update_agent(
+            path,
+            {
+                "health_status": status_label,
+                "last_health_check": last_checked,
+            },
+        )
+    except Exception as e:
+        logger.warning(f"Failed to persist health status for agent {path}: {e}")
+
+    logger.info(
+        f"Agent health check for {path} completed with status {status_label} "
+        f"(last URL tried: {health_check_url})"
+    )
 
     return {
         "agent_path": path,
-        "ping_url": ping_url,
+        "health_check_url": health_check_url,
         "status": status_label,
         "status_code": status_code,
         "detail": detail,
@@ -827,6 +908,139 @@ async def toggle_agent(
         "path": path,
         "is_enabled": enabled,
     }
+
+
+@router.get("/agents/{path:path}/security-scan")
+async def get_agent_security_scan(
+    path: str,
+    user_context: Annotated[dict, Depends(nginx_proxied_auth)],
+):
+    """
+    Get security scan results for an A2A agent.
+
+    Returns the latest security scan results for the specified agent,
+    including threat analysis, severity levels, and detailed findings
+    from YARA, specification validation, and heuristic analyzers.
+
+    **Authentication:** JWT Bearer token or session cookie
+    **Authorization:** Requires admin privileges or access to the agent
+
+    **Path Parameters:**
+    - `path` (required): Agent path (e.g., /code-reviewer)
+
+    **Response:**
+    Returns security scan results with analysis_results and findings.
+
+    **Example:**
+    ```bash
+    curl -X GET http://localhost/api/agents/code-reviewer/security-scan \\
+      --cookie-jar .cookies --cookie .cookies
+    ```
+    """
+    if not path.startswith("/"):
+        path = "/" + path
+
+    # Check if agent exists
+    agent_info = await agent_service.get_agent_info(path)
+    if not agent_info:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Agent not found at path '{path}'",
+        )
+
+    # Check user permissions
+    if not user_context["is_admin"]:
+        # Allow all authenticated users to view agent scan results
+        pass
+
+    # Get scan results
+    from ..services.agent_scanner import agent_scanner_service
+
+    scan_result = await agent_scanner_service.get_scan_result(path)
+    if not scan_result:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No security scan results found for agent '{path}'. "
+            "The agent may not have been scanned yet.",
+        )
+
+    return scan_result
+
+
+@router.post("/agents/{path:path}/rescan")
+async def rescan_agent(
+    path: str,
+    user_context: Annotated[dict, Depends(nginx_proxied_auth)],
+):
+    """
+    Trigger a manual security scan for an A2A agent.
+
+    Initiates a new security scan for the specified agent and returns
+    the results. This endpoint is useful for re-scanning agents after
+    updates or for on-demand security assessments.
+
+    **Authentication:** JWT Bearer token or session cookie
+    **Authorization:** Requires admin privileges
+
+    **Path Parameters:**
+    - `path` (required): Agent path (e.g., /code-reviewer)
+
+    **Response:**
+    Returns the newly generated security scan results.
+
+    **Example:**
+    ```bash
+    curl -X POST http://localhost/api/agents/code-reviewer/rescan \\
+      --cookie-jar .cookies --cookie .cookies
+    ```
+    """
+    # Only admins can trigger manual scans
+    if not user_context["is_admin"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only administrators can trigger security scans",
+        )
+
+    if not path.startswith("/"):
+        path = "/" + path
+
+    # Check if agent exists
+    agent_info = await agent_service.get_agent_info(path)
+    if not agent_info:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Agent not found at path '{path}'",
+        )
+
+    # Get agent card from agent info
+    agent_card_dict = agent_info.model_dump()
+
+    logger.info(
+        f"Manual security scan requested by user '{user_context.get('username')}' "
+        f"for agent '{path}'"
+    )
+
+    try:
+        # Trigger security scan
+        from ..services.agent_scanner import agent_scanner_service
+
+        scan_result = await agent_scanner_service.scan_agent(
+            agent_card=agent_card_dict,
+            agent_path=path,
+            analyzers=None,  # Use default analyzers from config
+            api_key=None,  # Use default API key from config
+            timeout=None,  # Use default timeout from config
+        )
+
+        # Return the full scan result including raw_output for detailed findings
+        return scan_result.model_dump(mode="json")
+
+    except Exception as e:
+        logger.error(f"Manual security scan failed for agent '{path}': {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Security scan failed: {str(e)}",
+        )
 
 
 @router.get("/agents/{path:path}")
@@ -1262,149 +1476,3 @@ async def discover_agents_semantic(
         )
 
 
-@router.get("/agents/{path:path}/security-scan")
-async def get_agent_security_scan(
-    path: str,
-    user_context: Annotated[dict, Depends(nginx_proxied_auth)],
-):
-    """
-    Get security scan results for an A2A agent.
-
-    Returns the latest security scan results for the specified agent,
-    including threat analysis, severity levels, and detailed findings
-    from YARA, specification validation, and heuristic analyzers.
-
-    **Authentication:** JWT Bearer token or session cookie
-    **Authorization:** Requires admin privileges or access to the agent
-
-    **Path Parameters:**
-    - `path` (required): Agent path (e.g., /code-reviewer)
-
-    **Response:**
-    Returns security scan results with analysis_results and findings.
-
-    **Example:**
-    ```bash
-    curl -X GET http://localhost/api/agents/code-reviewer/security-scan \\
-      --cookie-jar .cookies --cookie .cookies
-    ```
-    """
-    if not path.startswith("/"):
-        path = "/" + path
-
-    # Check if agent exists
-    agent_info = await agent_service.get_agent_info(path)
-    if not agent_info:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Agent not found at path '{path}'",
-        )
-
-    # Check user permissions
-    if not user_context["is_admin"]:
-        # Check if user has access to this agent (similar to server access check)
-        # For now, allow all authenticated users to view agent scan results
-        # TODO: Implement agent-specific access control if needed
-        pass
-
-    # Get scan results
-    from ..services.agent_scanner import agent_scanner_service
-
-    scan_result = await agent_scanner_service.get_scan_result(path)
-    if not scan_result:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"No security scan results found for agent '{path}'. "
-            "The agent may not have been scanned yet.",
-        )
-
-    return scan_result
-
-
-@router.post("/agents/{path:path}/rescan")
-async def rescan_agent(
-    path: str,
-    user_context: Annotated[dict, Depends(nginx_proxied_auth)],
-):
-    """
-    Trigger a manual security scan for an A2A agent.
-
-    Initiates a new security scan for the specified agent and returns
-    the results. This endpoint is useful for re-scanning agents after
-    updates or for on-demand security assessments.
-
-    **Authentication:** JWT Bearer token or session cookie
-    **Authorization:** Requires admin privileges
-
-    **Path Parameters:**
-    - `path` (required): Agent path (e.g., /code-reviewer)
-
-    **Response:**
-    Returns the newly generated security scan results.
-
-    **Example:**
-    ```bash
-    curl -X POST http://localhost/api/agents/code-reviewer/rescan \\
-      --cookie-jar .cookies --cookie .cookies
-    ```
-    """
-    # Only admins can trigger manual scans
-    if not user_context["is_admin"]:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only administrators can trigger security scans",
-        )
-
-    if not path.startswith("/"):
-        path = "/" + path
-
-    # Check if agent exists
-    agent_info = await agent_service.get_agent_info(path)
-    if not agent_info:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Agent not found at path '{path}'",
-        )
-
-    # Get agent card from agent info
-    agent_card_dict = agent_info.model_dump()
-
-    logger.info(
-        f"Manual security scan requested by user '{user_context.get('username')}' "
-        f"for agent '{path}'"
-    )
-
-    try:
-        # Trigger security scan
-        from ..services.agent_scanner import agent_scanner_service
-
-        scan_result = await agent_scanner_service.scan_agent(
-            agent_card=agent_card_dict,
-            agent_path=path,
-            analyzers=None,  # Use default analyzers from config
-            api_key=None,  # Use default API key from config
-            timeout=None,  # Use default timeout from config
-        )
-
-        # Return the scan result data
-        return {
-            "agent_path": scan_result.agent_path,
-            "agent_url": scan_result.agent_url,
-            "scan_timestamp": scan_result.scan_timestamp,
-            "is_safe": scan_result.is_safe,
-            "critical_issues": scan_result.critical_issues,
-            "high_severity": scan_result.high_severity,
-            "medium_severity": scan_result.medium_severity,
-            "low_severity": scan_result.low_severity,
-            "analyzers_used": scan_result.analyzers_used,
-            "scan_failed": scan_result.scan_failed,
-            "error_message": scan_result.error_message,
-            "output_file": scan_result.output_file,
-        }
-
-    except Exception as e:
-        logger.error(f"Manual security scan failed for agent '{path}': {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Security scan failed: {str(e)}",
-        )
