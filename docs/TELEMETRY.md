@@ -117,31 +117,75 @@ When telemetry is enabled (the default), you will see this banner at startup:
 ==============================================================================
 ```
 
+## Telemetry Configuration Parameters
+
+| Environment Variable | Purpose | Default |
+|---------------------|---------|---------|
+| `MCP_TELEMETRY_DISABLED` | Set to `1` to disable all telemetry | _(not set, telemetry ON)_ |
+| `MCP_TELEMETRY_OPT_IN` | Set to `1` to enable daily heartbeat with aggregate counts | _(not set, heartbeat OFF)_ |
+| `MCP_TELEMETRY_ENDPOINT` | HTTPS URL for a self-hosted telemetry collector | _(built-in endpoint)_ |
+| `MCP_TELEMETRY_DEBUG` | Set to `true` to log payloads instead of sending | `false` |
+
+### Docker Compose
+
+Add these to your `.env` file in the project root:
+
+```bash
+# .env
+MCP_TELEMETRY_DISABLED=1          # Disable all telemetry
+MCP_TELEMETRY_OPT_IN=1            # Enable daily heartbeat (optional)
+MCP_TELEMETRY_ENDPOINT=https://your-collector.example.com/v1/collect  # Self-hosted (optional)
+MCP_TELEMETRY_DEBUG=true           # Debug mode (optional)
+```
+
+These are automatically picked up by the `docker-compose.yml`, `docker-compose.prebuilt.yml`, and `docker-compose.podman.yml` files.
+
+### ECS (Terraform)
+
+Add these to your `terraform.tfvars`:
+
+```hcl
+# terraform.tfvars
+mcp_telemetry_disabled = "1"       # Disable all telemetry
+mcp_telemetry_opt_in   = "1"       # Enable daily heartbeat (optional)
+telemetry_debug        = "true"    # Debug mode (optional)
+```
+
+The corresponding Terraform variables are defined in `terraform/aws-ecs/variables.tf`.
+
+### Kubernetes (Helm)
+
+Set these in your `values.yaml` or pass with `--set`:
+
+```yaml
+# values.yaml (standalone chart)
+app:
+  mcpTelemetryDisabled: true       # Disable all telemetry
+  mcpTelemetryOptIn: true          # Enable daily heartbeat (optional)
+  telemetryDebug: true             # Debug mode (optional)
+
+# -- OR for the stack chart --
+# values.yaml (mcp-gateway-registry-stack)
+registry:
+  app:
+    mcpTelemetryDisabled: true
+    mcpTelemetryOptIn: true
+    telemetryDebug: true
+```
+
+Or with `helm install`/`helm upgrade`:
+
+```bash
+helm upgrade my-release charts/registry \
+  --set app.mcpTelemetryDisabled=true \
+  --set app.mcpTelemetryOptIn=true
+```
+
+These values are injected as environment variables via the `registry-otel-config` ConfigMap.
+
 ## How to Opt-Out
 
-### Method 1: Environment Variable (Recommended)
-
-```bash
-export MCP_TELEMETRY_DISABLED=1
-```
-
-### Method 2: Configuration File
-
-In your `.env` file or environment:
-
-```bash
-TELEMETRY_ENABLED=false
-```
-
-### Method 3: CLI Flag
-
-If using the registry management CLI:
-
-```bash
-registry-management --no-telemetry
-```
-
-### Verify Opt-Out
+Set `MCP_TELEMETRY_DISABLED=1` using the method for your deployment (see above).
 
 When telemetry is disabled, you'll see this message at startup:
 
@@ -151,11 +195,7 @@ When telemetry is disabled, you'll see this message at startup:
 
 ## How to Opt-In to Richer Data
 
-To enable the daily heartbeat with aggregate counts:
-
-```bash
-export MCP_TELEMETRY_OPT_IN=1
-```
+Set `MCP_TELEMETRY_OPT_IN=1` using the method for your deployment (see above).
 
 When opted in, you'll see:
 
@@ -165,11 +205,7 @@ When opted in, you'll see:
 
 ## Debug Mode
 
-To see what data would be sent without actually sending it:
-
-```bash
-export MCP_TELEMETRY_DEBUG=1
-```
+Set `MCP_TELEMETRY_DEBUG=true` using the method for your deployment (see above).
 
 This logs the full JSON payload to stderr instead of sending it to the collector.
 
