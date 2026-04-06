@@ -833,6 +833,7 @@ async def internal_register_service(
     supported_transports: Annotated[str | None, Form()] = None,
     headers: Annotated[str | None, Form()] = None,
     tool_list_json: Annotated[str | None, Form()] = None,
+    metadata: Annotated[str | None, Form()] = None,
     visibility: Annotated[str, Form()] = "public",
     allowed_groups: Annotated[str | None, Form()] = None,
 ):
@@ -945,6 +946,14 @@ async def internal_register_service(
         server_entry["headers"] = headers_list
     if auth_header_name:
         server_entry["auth_header_name"] = auth_header_name
+    if metadata:
+        try:
+            server_entry["metadata"] = json.loads(metadata) if isinstance(metadata, str) else metadata
+        except json.JSONDecodeError:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "Invalid metadata", "reason": "metadata must be valid JSON"},
+            )
 
     # Encrypt credential before storage (if provided)
     if auth_credential and auth_scheme != "none":
@@ -1404,6 +1413,7 @@ async def edit_server_form(
 
 @router.post("/edit/{service_path:path}")
 async def edit_server_submit(
+    request: Request,
     service_path: str,
     name: Annotated[str, Form()],
     proxy_pass_url: Annotated[str, Form()],
@@ -1419,7 +1429,7 @@ async def edit_server_submit(
     auth_scheme: Annotated[str, Form()] = "none",
     auth_credential: Annotated[str | None, Form()] = None,
     auth_header_name: Annotated[str | None, Form()] = None,
-    _csrf: Annotated[None, Depends(verify_csrf_token)] = None,
+    _csrf: Annotated[None, Depends(verify_csrf_token_flexible)] = None,
 ):
     """Handle server edit form submission (requires modify_service UI permission)."""
     from ..auth.dependencies import user_has_ui_permission_for_service
@@ -1550,6 +1560,15 @@ async def edit_server_submit(
     is_enabled = await server_service.is_service_enabled(service_path)
     await faiss_service.add_or_update_service(service_path, updated_server_entry, is_enabled)
 
+    # Update DocumentDB search embeddings
+    try:
+        from ..repositories.factory import get_search_repository
+
+        search_repo = get_search_repository()
+        await search_repo.index_server(service_path, updated_server_entry, is_enabled)
+    except Exception as e:
+        logger.warning(f"Failed to update search index for '{service_path}': {e}")
+
     # Regenerate Nginx configuration
     enabled_servers = {}
 
@@ -1562,7 +1581,11 @@ async def edit_server_submit(
 
     logger.info(f"Server '{name}' ({service_path}) updated by user '{user_context['username']}'")
 
-    # Redirect back to the main page
+    # Return JSON for API clients (React SPA), redirect for browser form submissions
+    accept = request.headers.get("accept", "")
+    if "application/json" in accept:
+        return {"status": "ok", "message": f"Server '{name}' updated successfully"}
+
     return RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
 
 

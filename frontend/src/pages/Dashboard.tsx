@@ -274,7 +274,8 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', selectedTag
     version: '',
     visibility: 'public' as 'public' | 'private' | 'group',
     tags: '',  // Raw string, parsed on save
-    target_agents: ''  // Raw string, parsed on save
+    target_agents: '',  // Raw string, parsed on save
+    metadata: '',  // JSON string for custom metadata
   });
   const [skillFormLoading, setSkillFormLoading] = useState(false);
   const [showDeleteSkillConfirm, setShowDeleteSkillConfirm] = useState<string | null>(null);
@@ -960,34 +961,35 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', selectedTag
     try {
       setEditLoading(true);
 
-      const formData = new FormData();
-      formData.append('name', editForm.name);
-      formData.append('description', editForm.description);
-      formData.append('proxy_pass_url', editForm.proxyPass);
-      formData.append('tags', editForm.tags.join(','));
-      formData.append('license', editForm.license);
-      formData.append('num_tools', editForm.num_tools.toString());
+      const params = new URLSearchParams();
+      params.append('name', editForm.name);
+      params.append('description', editForm.description);
+      params.append('proxy_pass_url', editForm.proxyPass);
+      params.append('tags', editForm.tags.join(','));
+      params.append('license', editForm.license);
+      params.append('num_tools', editForm.num_tools.toString());
       if (editForm.mcp_endpoint) {
-        formData.append('mcp_endpoint', editForm.mcp_endpoint);
+        params.append('mcp_endpoint', editForm.mcp_endpoint);
       }
       if (editForm.metadata) {
-        formData.append('metadata', editForm.metadata);
+        params.append('metadata', editForm.metadata);
       }
       if (editForm.auth_scheme !== 'none') {
-        formData.append('auth_scheme', editForm.auth_scheme);
+        params.append('auth_scheme', editForm.auth_scheme);
         if (editForm.auth_credential) {
-          formData.append('auth_credential', editForm.auth_credential);
+          params.append('auth_credential', editForm.auth_credential);
         }
         if (editForm.auth_scheme === 'api_key' && editForm.auth_header_name) {
-          formData.append('auth_header_name', editForm.auth_header_name);
+          params.append('auth_header_name', editForm.auth_header_name);
         }
       } else {
-        formData.append('auth_scheme', 'none');
+        params.append('auth_scheme', 'none');
       }
 
       // Use the correct edit endpoint with the server path
-      await axios.post(`/api/edit${editingServer.path}`, formData, {
+      await axios.post(`/api/edit${editingServer.path}`, params, {
         headers: {
+          'Accept': 'application/json',
           'Content-Type': 'application/x-www-form-urlencoded',
         },
       });
@@ -1234,7 +1236,8 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', selectedTag
         version: skill.version || '',
         visibility: skill.visibility || 'public',
         tags: (skill.tags || []).join(', '),
-        target_agents: (skill.target_agents || []).join(', ')
+        target_agents: (skill.target_agents || []).join(', '),
+        metadata: skill.metadata?.extra ? JSON.stringify(skill.metadata.extra, null, 2) : ''
       });
     } else {
       // Create mode - reset form
@@ -1248,7 +1251,8 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', selectedTag
         version: '',
         visibility: 'public',
         tags: '',
-        target_agents: ''
+        target_agents: '',
+        metadata: ''
       });
     }
     setShowSkillModal(true);
@@ -1305,6 +1309,18 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', selectedTag
       const parseTags = (str: string): string[] =>
         str.split(',').map(t => t.trim()).filter(t => t.length > 0);
 
+      // Parse optional metadata JSON
+      let parsedMetadata: Record<string, any> | undefined = undefined;
+      if (skillForm.metadata.trim()) {
+        try {
+          parsedMetadata = JSON.parse(skillForm.metadata);
+        } catch {
+          showToast('Invalid JSON in metadata field', 'error');
+          setSkillFormLoading(false);
+          return;
+        }
+      }
+
       const payload = {
         name: skillForm.name,
         description: skillForm.description,
@@ -1313,12 +1329,14 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', selectedTag
         version: skillForm.version || undefined,
         visibility: skillForm.visibility,
         tags: parseTags(skillForm.tags),
-        target_agents: parseTags(skillForm.target_agents)
+        target_agents: parseTags(skillForm.target_agents),
+        metadata: parsedMetadata
       };
 
       if (editingSkill) {
         // Update existing skill
-        await axios.put(`/api/skills${editingSkill.path}`, payload);
+        const skillPath = editingSkill.path.replace(/^\/skills\//, '');
+        await axios.put(`/api/skills/${skillPath}`, payload);
         showToast('Skill updated successfully!', 'success');
         notifyDataChanged();
       } else {
@@ -3191,6 +3209,22 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all', selectedTag
                 />
                 <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
                   Comma-separated list of compatible coding assistants
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-200 mb-1">
+                  Custom Metadata (JSON, optional)
+                </label>
+                <textarea
+                  value={skillForm.metadata}
+                  onChange={(e) => setSkillForm(prev => ({ ...prev, metadata: e.target.value }))}
+                  rows={4}
+                  className="block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-amber-500 focus:border-amber-500 font-mono text-sm"
+                  placeholder='{"category": "data-processing", "framework": "langchain"}'
+                />
+                <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  Key-value pairs in JSON format for searchable custom metadata
                 </p>
               </div>
 
